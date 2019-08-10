@@ -4,14 +4,19 @@ import java.util.PriorityQueue;
 import java.util.Queue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class DefferedQueue {
 
+    ExecutorService eventExecutor = Executors.newCachedThreadPool();;
+    Future<?> eventExecutorTaskResult;
+
     private class Event implements Comparable<Event> {
-	
+
 	String name;
 	long startTime;
+
 	Runnable task;
 
 	public Event(String name, Runnable task, long startTime) {
@@ -40,10 +45,9 @@ public class DefferedQueue {
 		}
 	    }
 	}
-	
+
 	@Override
-	public String toString()
-	{
+	public String toString() {
 	    return name;
 	}
     }
@@ -61,7 +65,7 @@ public class DefferedQueue {
 	Runnable eventExecutorTask = () -> {
 	    System.out.println(Thread.currentThread().getName() + ": ("
 		    + System.currentTimeMillis()
-		    + ") EventExecutor started ...");
+		    + ") EventExecutor starting ...");
 
 	    exit: while (true) {
 		Event event;
@@ -69,13 +73,6 @@ public class DefferedQueue {
 		synchronized (this) {
 
 		    while (queue.isEmpty()) {
-
-			if (shutDown.get()) {
-			    System.out
-				    .println(Thread.currentThread().getName()
-					    + ": EventExecutor has detected the Termination flag");
-			    break exit;
-			}
 
 			// wait
 			System.out.println(Thread.currentThread().getName()
@@ -86,38 +83,56 @@ public class DefferedQueue {
 			    Thread.currentThread().interrupt();
 			    System.out.println(Thread.currentThread().getName()
 				    + ": EventExecutor has been interrupted");
-			    break;
+			    break exit;
 			}
 		    }
 
-		    event = queue.peek();
+		    while (!queue.isEmpty()) {
+			event = queue.peek();
 
-		    long currentTime = System.currentTimeMillis();
-		    if (currentTime > event.startTime) {
-			event = queue.poll();
-			event.execute();
-		    } else {
-			try {
-			    long waitFor = Math.subtractExact(
-				    event.startTime, currentTime);
-			    System.out.println(Thread.currentThread().getName()
-				    + ": waiting for next scheduledEvent " + waitFor + " milliseconds");
-			    wait(waitFor);
-			    System.out.println(Thread.currentThread().getName() + ": woke up " + queue);
+			long currentTime = System.currentTimeMillis();
+			if (currentTime > event.startTime) {
+			    event = queue.poll();
+			    event.execute();
+			} else {
+			    try {
+				long waitFor = Math.subtractExact(
+					event.startTime, currentTime);
+				System.out.println(Thread.currentThread()
+					.getName()
+					+ ": waiting for next scheduledEvent "
+					+ waitFor + " milliseconds");
+				wait(waitFor);
+				System.out.println(Thread.currentThread()
+					.getName() + ": woke up " + queue);
+				if (!shutDown.get()) {
+				    break;
+				}
 
-			} catch (InterruptedException e) {
-			    e.printStackTrace();
+			    } catch (InterruptedException e) {
+				// Thread.currentThread().interrupt();
+				shutDown.set(true);
+				System.out
+					.println(Thread.currentThread()
+						.getName()
+						+ ": EventExecutor has been interrupted.");
+				
+				System.out
+				.println(Thread.currentThread()
+					.getName()
+					+ ": EventExecutor will terminate after executing all registered events");
+			    }
 			}
+		    }
+
+		    if (shutDown.get()) {
+			break exit;
 		    }
 		}
 	    }
-	    System.out.println(Thread.currentThread().getName()
-		    + ": EventExecutor is shutting down ...");
 	};
 
-	ExecutorService eventExecutor = Executors.newCachedThreadPool();
-	eventExecutor.execute(eventExecutorTask);
-	eventExecutor.shutdown();
+	eventExecutorTaskResult = eventExecutor.submit(eventExecutorTask);
     }
 
     public void scheduleEvent(String name, Runnable task, int time) {
@@ -126,14 +141,20 @@ public class DefferedQueue {
 	synchronized (this) {
 	    queue.add(event);
 	    notify();
-	    System.out.println(Thread.currentThread().getName() + ": added task " + time);
+	    System.out.println(Thread.currentThread().getName()
+		    + ": added task " + time);
 	}
 
     }
 
-    public void shutDown() {
-
-	shutDown.set(true);
+    public void shutDown() throws InterruptedException {
+	eventExecutorTaskResult.cancel(true);
+	eventExecutor.shutdown();
+	while (!eventExecutor.isTerminated()) {
+	    Thread.sleep(500);
+	}
+	System.out.println(Thread.currentThread().getName()
+		+ ": EventExecutor shutting down ...");
     }
 
 }
